@@ -3,7 +3,10 @@ import click
 import logging
 from pathlib import Path
 from dotenv import find_dotenv, load_dotenv
-
+import shutil
+import os
+import pandas as pd
+import numpy as np
 
 @click.command()
 @click.argument('input_filepath', type=click.Path(exists=True))
@@ -14,6 +17,23 @@ def main(input_filepath, output_filepath):
     """
     logger = logging.getLogger(__name__)
     logger.info('making final data set from raw data')
+
+    # if "pretrain_features.csv.zip" not in os.listdir("../../data/raw"):
+    if "pretrain_features.csv.zip" not in os.listdir("data/raw"):
+        logger.error("missing data files")
+        return
+
+    x_pretrain = pd.read_csv("data/raw/pretrain_features.csv.zip", index_col="Id", compression='zip').drop("smiles", axis=1).to_numpy()
+    y_pretrain = pd.read_csv("data/raw/pretrain_labels.csv.zip", index_col="Id", compression='zip').to_numpy().squeeze(-1)
+    x_train = pd.read_csv("data/raw/train_features.csv.zip", index_col="Id", compression='zip').drop("smiles", axis=1).to_numpy()
+    y_train = pd.read_csv("data/raw/train_labels.csv.zip", index_col="Id", compression='zip').to_numpy().squeeze(-1)
+    x_test = pd.read_csv("data/raw/test_features.csv.zip", index_col="Id", compression='zip').drop("smiles", axis=1)
+
+    np.save("data/processed/x_pretrain_features.npy", x_pretrain)
+    np.save("data/processed/y_pretrain_labels.npy", y_pretrain)
+    np.save("data/processed/train_features.npy", x_train)
+    np.save("data/processed/train_labels.npy", y_train)
+    np.save("data/processed/test_features.npy", x_test)
 
 
 if __name__ == '__main__':

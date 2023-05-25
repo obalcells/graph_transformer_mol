@@ -9,26 +9,7 @@ import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from sklearn.base import BaseEstimator, TransformerMixin
 
-
-
-def load_data():
-    """
-    This function loads the data from the csv files and returns it as numpy arrays.
-
-    input: None
-    
-    output: x_pretrain: np.ndarray, the features of the pretraining set
-            y_pretrain: np.ndarray, the labels of the pretraining set
-            x_train: np.ndarray, the features of the training set
-            y_train: np.ndarray, the labels of the training set
-            x_test: np.ndarray, the features of the test set
-    """
-    x_pretrain = pd.read_csv("public/pretrain_features.csv.zip", index_col="Id", compression='zip').drop("smiles", axis=1).to_numpy()
-    y_pretrain = pd.read_csv("public/pretrain_labels.csv.zip", index_col="Id", compression='zip').to_numpy().squeeze(-1)
-    x_train = pd.read_csv("public/train_features.csv.zip", index_col="Id", compression='zip').drop("smiles", axis=1).to_numpy()
-    y_train = pd.read_csv("public/train_labels.csv.zip", index_col="Id", compression='zip').to_numpy().squeeze(-1)
-    x_test = pd.read_csv("public/test_features.csv.zip", index_col="Id", compression='zip').drop("smiles", axis=1)
-    return x_pretrain, y_pretrain, x_train, y_train, x_test
+from src.data.load_data import load_data
 
 class Net(nn.Module):
     """
