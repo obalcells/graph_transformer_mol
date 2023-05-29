@@ -13,7 +13,9 @@ class GraphEmbeddingV1(nn.Module):
         self.out_degree_embedding = nn.Embedding(max_out_degree + 1, d_model, padding_idx=0)
         self.virtual_node_embedding = nn.Embedding(1, d_model) # this is the embedding for the virtual node in each graph
 
+        self.tmp_embedding = nn.Embedding(4, d_model)
+
     def forward(self, batch_data):
-        pass
+        return self.tmp_embedding(batch_data)
 
 

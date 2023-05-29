@@ -1,19 +1,21 @@
 import torch
 import torch.nn as nn
-from layer_norm import LayerNorm
+from fairseq.modules import (
+    LayerNorm,
+)
 
-class GraphEncoderLayer(nn.Module):
+class TransformerLayer(nn.Module):
     def __init__(self, size, self_attn, feed_forward, dropout, pre_layer_norm):
-        super(GraphEncoderLayer, self).__init__()
+        super(TransformerLayer, self).__init__()
         self.size = size
         self.self_attn = self_attn
         self.feed_forward = feed_forward
         self.sublayer_connections = nn.ModuleList([SublayerConnection(size, dropout, pre_layer_norm) for _ in range(2)])
 
-    def forward(self, x, self_attn_bias, self_attn_mask, self_attn_padding_mask):
+    def forward(self, x, self_attn_bias):
         # somehow define the attention input parameters in the parent class
-        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
-        return self.sublayer[1](x, self.feed_forward)
+        x = self.sublayer_connections[0](x, lambda x: self.self_attn(x, x, x, self_attn_bias))
+        return self.sublayer_connections[1](x, self.feed_forward)
 
 class PositionwiseFeedForward(nn.Module):
     def __init__(self, d_model, d_ff, dropout=0.1):
@@ -27,7 +29,7 @@ class PositionwiseFeedForward(nn.Module):
         return self.dropout(self.w_2(self.dropout(self.w_1(x).relu())))
 
 class SublayerConnection(nn.Module):
-    def __init__(self, size, dropout):
+    def __init__(self, size, dropout, pre_layer_normalization):
         super(SublayerConnection, self).__init__()
         self.norm = LayerNorm(size)
         self.dropout = nn.Dropout(dropout)

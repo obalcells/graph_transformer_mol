@@ -5,19 +5,24 @@ from torch.nn import functional as F
 
 from fairseq.data import FairseqDataset, BaseWrapperDataset, data_utils
 
-from ogb.lsc import PCQM4Mv2Evaluator
-from .ogb_dataset_wrappers import MyPygPCQM4Mv2Dataset
-from .collator import collator
+from ogb.lsc.pcqm4mv2 import PCQM4Mv2Evaluator
+from src.data.ogb_dataset_wrappers import MyPygPCQM4Mv2Dataset, MyPygPCQM4Mv2PosDataset
+from src.data.collater import collater_2d, collater_3d
 
 # we call this class from fairseq to load the dataset
 class PreprocessedData():
     def __init__(self, dataset_name="pcqm4m-v2", dataset_path="/Users/oscarbalcells/Desktop/AI/task4/datasets/pcqm4m-v2"):
         # only this dataset supported at the moment
-        assert dataset_name == "pcqm4m-v2"
+        assert dataset_name in ["pcqm4m-v2", "pcqm4m-v2-pos"], "Only pcqm4m-v2 and pcqm4m-v2-pos supported at the moment"
+
         self.dataset_name = dataset_name
+        root = "/".join(list(dataset_path.split('/')[0:-1])) 
         # we load a custom dataset class so that we can customise 
         # the __getitem__ method
-        self.dataset = MyPygPCQM4Mv2Dataset(root=dataset_path)
+        if dataset_name == "pcqm4m-v2":
+            self.dataset = MyPygPCQM4Mv2Dataset(root=root)
+        elif dataset_name == "pcqm4m-v2-pos":
+            self.dataset = MyPygPCQM4Mv2PosDataset(root=root)
         self.setup()
 
     def setup(self, stage: str = None):
@@ -25,7 +30,14 @@ class PreprocessedData():
         # we just use the first 1000 samples for now due to memory issues
         self.train_idx = split_idx["train"][:1000]
         self.valid_idx = split_idx["valid"][:1000]
-        self.test_idx = split_idx["test"][:1000]
+        self.test_idx = split_idx["test-dev"][:1000]
+
+        # TODO: Remove this
+        print("AAA")
+        self.train_idx = torch.tensor([0, 1, 2, 3, 4, 5])
+        self.valid_idx = torch.tensor([6, 7, 8])
+        self.test_idx = torch.tensor([9, 10])
+        print(len(self.dataset))
 
         self.dataset_train = self.dataset.index_select(self.train_idx)
         self.dataset_val = self.dataset.index_select(self.valid_idx)
@@ -41,32 +53,40 @@ class PreprocessedData():
         self.evaluator = PCQM4Mv2Evaluator()
 
 class BatchedDataDataset(FairseqDataset):
-    def __init__(self, dataset, dataset_version="2D"):
+    def __init__(self,
+                 dataset,
+                 dataset_version="2D",
+                 max_node=256,
+                 multi_hop_max_dist=5,
+                 spatial_pos_max=1024):
         self.dataset = dataset
 
-        # the only supported version at the moment
-        assert dataset_version == "2D"
+        assert dataset_version in ["2D", "3D"]
         self.dataset_version = dataset_version
 
-        self.max_node = dataset.max_node
-        self.multi_hop_max_dist = dataset.multi_hop_max_dist
-        self.spatial_pos_max = dataset.spatial_pos_max
+        self.max_node = max_node
+        self.multi_hop_max_dist = multi_hop_max_dist
+        self.spatial_pos_max = spatial_pos_max
 
     def __getitem__(self, index):
-        item = self.dataset[int(index)]
+        return self.dataset[int(index)]
 
     def __len__(self):
         return len(self.dataset)
 
     def collater(self, samples):
-        if dataset_version == "3D":
-            raise NotImplementedError()
+        if self.dataset_version == "2D":
+            return collater_2d(samples, 
+                            max_node=self.max_node,
+                            multi_hop_max_dist=self.multi_hop_max_dist,
+                            spatial_pos_max=self.spatial_pos_max)
+        elif self.dataset_version == "3D":
+            return collater_3d(samples, 
+                            max_node=self.max_node,
+                            multi_hop_max_dist=self.multi_hop_max_dist,
+                            spatial_pos_max=self.spatial_pos_max)
         else:
-            collater_fn = collator 
-        return collater(samples, 
-                        max_node=self.max_node,
-                        multi_hop_max_distance=self.multi_hop_max_dist,
-                        spatial_pos_max=self.spatial_pos_max)
+            raise NotImplementedError()
 
 class CacheAllDataset(BaseWrapperDataset):
     def __init__(self, dataset):

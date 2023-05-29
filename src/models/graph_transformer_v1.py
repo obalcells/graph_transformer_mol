@@ -1,150 +1,148 @@
 import torch
 import torch.nn as nn
 import math
+import logging
 import copy
 from einops import rearrange, reduce
-from layer_norm import LayerNorm
-from graph_embedding import GraphEmbeddingV1
-from graph_attention_layer import GraphAttentionBias
+from src.modules.graph_embedding import GraphEmbeddingV1
+from src.modules.layer_norm import LayerNorm
+from src.modules.graph_attention import MultiHeadedAttention, GraphAttentionBias
+from src.modules.transformer_layer import TransformerLayer, PositionwiseFeedForward
+from src.utils.parser import get_parser
 
+from fairseq import utils
+from fairseq.models import (
+    FairseqEncoder,
+    FairseqEncoderModel,
+    register_model,
+    register_model_architecture,
+)
+from fairseq.modules import (
+    LayerNorm,
+)
+
+logger = logging.getLogger(__name__)
 torch.manual_seed(0)
 
-def clones(module, N):
+def make_deep_copy(module, N):
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
-class GraphTransformerV1(nn.Module):
-    def __init__(self, graph_embedding, graph_attention_bias, encoder_layer, N, d_model):
-        super(GraphTransformerV1, self).__init__()
-        self.graph_embedding = graph_embedding 
-        self.graph_attention_bias = graph_attention_bias
-        self.encoder_layers = clones(encoder_layer, N)
-        self.d_model = d_model
+# we use this class to provide a wrapper for the graph transformer model
+@register_model("graph_transformer_v1")
+class GraphTransformer_V1_Wrapper(FairseqEncoderModel):
+    def __init__(self, args, encoder):
+        super().__init__(encoder)
+        self.args = args
+
+    @staticmethod
+    def add_args(parser):
+        parser.add_argument("--N", type=int, metavar="N", help="num layers")
+        parser.add_argument("--d_model", type=int, metavar="N", help="hidden emb dimension")
+        parser.add_argument("--max-nodes", type=int, help="max number of nodes in a graph")
+        parser.add_argument("--h", type=int, help="num heads")
+        parser.add_argument("--d_ff", type=int, help="hidden layer size in feedforward network")
+        parser.add_argument("--dropout", type=float, help="dropout prob")
+
+    @classmethod
+    def build_model(cls, args, task):
+        logger.info(args)
+
+        model = GraphTransformer_V1(args)
+
+        return cls(args, model) 
+
+    def forward(self, batched_data, **kwargs):
+        return self.encoder(batched_data, **kwargs)
+
+
+class GraphTransformer_V1(FairseqEncoder):
+    def __init__(self, args):
+        super().__init__(dictionary=None)
+        self.d_model = args.d_model
+        self.N = args.N
+
+        self_attention = MultiHeadedAttention(args.h, args.d_model)
+        feed_forward = PositionwiseFeedForward(args.d_model, args.d_ff, args.dropout)
+
+        self.graph_embedding = GraphEmbeddingV1(args.h, args.d_model, 256, 100, 100)
+        self.attention_bias = GraphAttentionBias()
+        self.layers = make_deep_copy(TransformerLayer(
+                                            args.d_model,
+                                            self_attention,
+                                            feed_forward,
+                                            args.dropout,
+                                            args.pre_layer_norm),
+                                     args.N)
+
+        del self_attention
+        del feed_forward
 
         self.activation_fn = nn.GELU() # Maybe ReLu instead? or pass this as a parameter?
-        self.layer_norm = LayerNorm(d_model)
-        self.head_linear = nn.Linear(d_model, d_model)
-        self.output_layer = nn.Linear(d_model, 1)
+        self.layer_norm = LayerNorm(self.d_model)
+        self.head_linear = nn.Linear(self.d_model, self.d_model)
+        self.output_layer = nn.Linear(self.d_model, 1)
 
-    def forward(self, batch_data):
+    def forward(self, batch_data, **unused):
+        print("Calculating graph embedding...")
         x = self.graph_embedding(batch_data)
-        attention_bias = self.graph_attention_bias(batch_data)
+        print("Input tensor after embedding is:", x)
+        attention_bias = self.attention_bias(batch_data)
 
         # we first compute the hidden states for all nodes 
-        for encoder_layer in self.encoder_layers:
-            x = encoder_layer(x, attention_bias, mask)
+        for layer in self.layers:
+            x = layer(x, attention_bias)
 
         # extract the first node's hidden state for each graph in the batch 
         x = x[:, 0, :]
 
         x = self.layer_norm(self.activation_fn(self.head_linear(x)))
+        # no dropout here
         return self.output_layer(x)
 
-
-def attention(query, key, value, attention_bias, mask=None, dropout=None):
-    d_k = query.size(-1)
-    scores = torch.einsum('bhij,bhkj->bhik', query, key) / math.sqrt(d_k)
-    # we add the attention bias (information about the graph) to the scores before the softmax
-    scores = scores + attention_bias 
-    if mask is not None:
-        scores = scores.masked_fill(mask == 0, -1e9)
-    p_attn = scores.softmax(dim=-1)
-    if dropout is not None:
-        p_attn = dropout(p_attn)
-    return torch.matmul(p_attn, value), p_attn
-
-class MultiHeadedAttention(nn.Module):
-    def __init__(self, h, d_model, dropout=0.1):
-        super(MultiHeadedAttention, self).__init__()
-        assert d_model % h == 0
-        # We assume d_v always equals d_k
-        self.d_k = d_model // h
-        self.h = h
-        self.linears = clones(nn.Linear(d_model, d_model), 4)
-        self.attn = None
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, query, key, value, attention_bias, mask=None):
-
-        if mask is not None:
-            # The same mask is applied to all h heads.
-            mask = mask.unsqueeze(1)
-        nbatches = query.size(0)
-
-        query, key, value = [
-          rearrange(lin(x), 'b n (h d) -> b h n d', h=self.h)
-          for lin, x in zip(self.linears, (query, key, value))
-        ]
-
-        print("Attention V input:", value)
-
-        x, self.attn = attention(
-            query, key, value, attention_bias, mask=mask, dropout=self.dropout
-        )
-
-        x = rearrange(x, 'b h n d -> b n (h d)')
-        print("Attention V output:", x)
-
-        del query
-        del key
-        del value
-        return self.linears[-1](x)
-
-class PositionwiseFeedForward(nn.Module):
-    def __init__(self, d_model, d_ff, dropout=0.1):
-        super(PositionwiseFeedForward, self).__init__()
-        self.w_1 = nn.Linear(d_model, d_ff)
-        self.w_2 = nn.Linear(d_ff, d_model)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        return self.w_2(self.dropout(self.w_1(x).relu()))
-
-class Embeddings(nn.Module):
-    def __init__(self, d_model, vocab):
-        super(Embeddings, self).__init__()
-        self.lut = nn.Embedding(vocab, d_model)
-        self.d_model = d_model
-
-    def forward(self, x):
-        return self.lut(x) * math.sqrt(self.d_model)
-
-def make_graph_transformer_model(
-    src_vocab, N=6, d_model=512, d_ff=2048, h=8, dropout=0.1
-):
-    "Helper: Construct a model from hyperparameters."
-    c = copy.deepcopy
-    attn = MultiHeadedAttention(h, d_model)
-    ff = PositionwiseFeedForward(d_model, d_ff, dropout)
-    transformer_layer = TransformerLayer(d_model, c(attn), c(ff), dropout)
-
-    model = GraphTransformerV1(
-        Embeddings(d_model, src_vocab),
-        TransformerLayer(d_model, c(attn), c(ff), dropout),
-        N=6,
-        d_model=d_model
-    )
-
-    # Initialize parameters with Xavier uniform distribution 
-    for p in model.parameters():
-        if p.dim() > 1:
-            nn.init.xavier_uniform_(p)
-
-    return model
+@register_model_architecture("graph_transformer_v1", "graph_transformer_v1")
+def base_architecture(args):
+    # args.dropout = getattr(args, "dropout", 0.1)
+    args.dropout = 0.1
+    # args.attention_dropout = getattr(args, "attention_dropout", 0.1)
+    # args.d_ff = getattr(args, "d_ff", 512)
+    args.d_ff = 512
+    # args.N = getattr(args, "encoder_layers", 4)
+    args.N = 4
+    # args.h = getattr(args, "encoder_attention_heads", 4)
+    args.h = 4
+    # args.max_nodes = getattr(args, "max_nodes", 256)
+    args.max_nodes = 256
+    # args.d_model = getattr(args, "d_model", 128)
+    args.d_model = 128
+    # args.pre_layer_norm = getattr(args, "pre_layer_norm", True)
+    args.pre_layer_norm = True
 
 def inference_test():
-    test_model = make_graph_transformer_model(11, 2)
+    parser = get_parser()
+    args = parser.parse_args()
+    # the non-specified arguments will be set to default base arch values
+    base_architecture(args)
+
+    test_model = GraphTransformer_V1(args)
     test_model.eval()
-    batch = torch.LongTensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]])
+    batch = torch.LongTensor([[1, 2, 3, 2, 1]])
     mask = torch.ones(1, 1, 10)
     attention_bias = torch.zeros(1, 1, 10)
 
-    memory = test_model(batch, attention_bias, mask)
+    memory = test_model(batch)
 
     print("Example Untrained Model Prediction:", memory)
 
 # test the mask and the bias term are working
 def inference_test_2():
-    test_model = make_graph_transformer_model(3, 2)
+    parser = get_parser()
+    args = parser.parse_args()
+    args.d_model = 4 
+    args.h = 2
+    # the non-specified arguments will be set to default base arch values
+    base_architecture(args)
+
+    test_model = GraphTransformer_V1(args)
     test_model.eval()
     batch = torch.LongTensor([[1, 1, 2]])
     mask = torch.tensor([[[True, True, True],
@@ -154,7 +152,7 @@ def inference_test_2():
                                     [0, 0, 1e9],
                                     [0, 0, 1e9]]])
 
-    memory = test_model(batch, attention_bias, mask)
+    memory = test_model(batch)
 
     print("Example Untrained Model Prediction:", memory)
 
