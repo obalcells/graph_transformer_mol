@@ -2,7 +2,6 @@ import logging
 import math
 import logging
 import os, math
-from fairseq.logging import progress_bar
 
 import contextlib
 from dataclasses import dataclass, field
@@ -10,7 +9,6 @@ from typing import Optional
 from fairseq.tasks import FairseqDataclass, FairseqTask, register_task
 from omegaconf import MISSING, II, open_dict, OmegaConf
 
-import torch.nn as nn
 import torch
 import numpy as np
 from fairseq.data import (
@@ -48,9 +46,6 @@ from src.models.transformer_m import TransformerMModel
 
 logger = logging.getLogger(__name__)
 SHORTEN_METHOD_CHOICES = ChoiceEnum(["none", "truncate", "random_crop"])
-
-def rmse(predictions, targets):
-    return np.sqrt(((predictions - targets) ** 2).mean())
 
 @dataclass
 class TransformerMPredictionConfig(FairseqDataclass):
@@ -158,6 +153,9 @@ class TransformerMPredictionTask(FairseqTask):
     def __init__(self, cfg):
         super().__init__(cfg)
         self.dm = PreprocessedData(dataset_name=self.cfg.dataset_name, dataset_path=self.cfg.data_path)
+        print("Length of dataset train: ", len(self.dm.dataset_train))
+        print("Length of dataset valid: ", len(self.dm.dataset_train))
+        print("Length of dataset test: ", len(self.dm.dataset_test))
 
     @classmethod
     def setup_task(cls, cfg, **kwargs):
@@ -229,72 +227,25 @@ class TransformerMPredictionTask(FairseqTask):
 
 if __name__ == "__main__":
     cfg = TransformerMPredictionConfig()
-    cfg.seed = 1
     cfg.arch = "transformer_m_base"
     # cfg.criterion = "l1_loss"
     cfg.criterion = "m_graph_regression"
     cfg.dataset_name = "pcqm4m-v2-pos"
-    cfg.data_path = "/users/oscarbalcells/Desktop/AI/task4/datasets/pcqm4m-v2-pos"
-
-    cfg.encoder_layers = 12
-    cfg.encoder_embed_dim = 768
-    cfg.encoder_ffn_embed_dim = 768
-    cfg.encoder_attention_heads = 32
-    cfg.num_3d_bias_kernel = 128
-    cfg.add_3d = True
-
-    # cfg.no_2d = False
-    # cfg.dropout = 0.0
-    # cfg.act_dropout = 0.1
-    # cfg.attn_dropout = 0.1
-    # cfg.weight_decay = 0.0
-    # cfg.sandwich_ln = False
-    # cfg.droppath_prob = 0.1
-    # cfg.noise_scale = 0.2
-    # cfg.mode_prob = "0.2,0.2,0.6"
-
+    cfg.data_path = "/users/oscarbalcells/Desktop/AI/task4/datasets/pcqm4m-v2"
     task = TransformerMPredictionTask(cfg)
+
     model = task.build_model(cfg)
-
-    checkpoint_path = "models/L12.pt"
-    model_state = torch.load(checkpoint_path)["model"]
-    model.load_state_dict(
-        model_state, strict=True
-    )
-    del model_state
-
     criterion = task.build_criterion(cfg)
 
     task.load_dataset('train')
     task.load_dataset('valid')
 
-    batch_iterator = task.get_batch_iterator(
-        dataset=task.dataset("train"),
-        disable_iterator_cache=False,
+    batch_itr = task.get_batch_iterator(
+        task.dataset("train"), max_tokens=4096
     )
+    batch_itr = batch_itr.next_epoch_itr()
 
-    itr = batch_iterator.next_epoch_itr(
-        shuffle=False, set_dataset_epoch=False
-    )
-
-    # infer
-    y_pred = []
-    y_true = []
-    with torch.no_grad():
-        model.eval()
-        for i, sample in enumerate(itr):
-            # sample = utils.move_to_cuda(sample)
-            y = model(**sample["net_input"])[0][:, 0, :].reshape(-1)
-            y_pred.extend(y.detach().cpu())
-            y_true.extend(sample["target"].detach().cpu().reshape(-1)[:y.shape[0]])
-            # torch.cuda.empty_cache()
-
-    print(y_pred)
-    print(y_true)
-
-    # save predictions
-    y_pred = torch.Tensor(y_pred)
-    y_true = torch.Tensor(y_true)
-
-    # evaluate pretrained models
-    print(f"RMSE: {rmse(y_pred, y_true)}")
+    for batch in batch_itr:
+        loss, sample_size, logging_output = criterion(model, batch) 
+        print(f"Loss {loss / sample_size}")
+        loss.backward()

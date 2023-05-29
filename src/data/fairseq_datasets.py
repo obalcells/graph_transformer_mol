@@ -6,42 +6,51 @@ from torch.nn import functional as F
 from fairseq.data import FairseqDataset, BaseWrapperDataset, data_utils
 
 from ogb.lsc.pcqm4mv2 import PCQM4Mv2Evaluator
-from src.data.ogb_dataset_wrappers import MyPygPCQM4Mv2Dataset, MyPygPCQM4Mv2PosDataset
+from src.data.ogb_dataset_wrappers import MyPygPCQM4Mv2Dataset, MyPygPCQM4Mv2PosDataset, SmallMyPygPCQM4Mv2PosDataset
 from src.data.collater import collater_2d, collater_3d
 
 # we call this class from fairseq to load the dataset
 class PreprocessedData():
-    def __init__(self, dataset_name="pcqm4m-v2", dataset_path="/Users/oscarbalcells/Desktop/AI/task4/datasets/pcqm4m-v2"):
+    def __init__(self, dataset_name="pcqm4m-v2-pos", dataset_path="/Users/oscarbalcells/Desktop/AI/task4/datasets/small-pcqm4m-v2-pos"):
         # only this dataset supported at the moment
-        assert dataset_name in ["pcqm4m-v2", "pcqm4m-v2-pos"], "Only pcqm4m-v2 and pcqm4m-v2-pos supported at the moment"
+        assert dataset_name in ["pcqm4m-v2", "pcqm4m-v2-pos", "iml-task4"], "Only pcqm4m-v2 and pcqm4m-v2-pos supported at the moment"
 
         self.dataset_name = dataset_name
-        root = "/".join(list(dataset_path.split('/')[0:-1])) 
+        # root = "/".join(list(dataset_path.split('/')[0:-1])) 
+
         # we load a custom dataset class so that we can customise 
         # the __getitem__ method
         if dataset_name == "pcqm4m-v2":
-            self.dataset = MyPygPCQM4Mv2Dataset(root=root)
+            self.dataset = MyPygPCQM4Mv2Dataset(root=dataset_path)
         elif dataset_name == "pcqm4m-v2-pos":
-            self.dataset = MyPygPCQM4Mv2PosDataset(root=root)
+            self.dataset = MyPygPCQM4Mv2PosDataset(root=dataset_path)
+        elif dataset_name == "iml-task4":
+            self.dataset = IMLDataset(root=dataset_path)
+
         self.setup()
 
     def setup(self, stage: str = None):
-        split_idx = self.dataset.get_idx_split()
+        # split_idx = self.dataset.get_idx_split()
         # we just use the first 1000 samples for now due to memory issues
-        self.train_idx = split_idx["train"][:1000]
-        self.valid_idx = split_idx["valid"][:1000]
-        self.test_idx = split_idx["test-dev"][:1000]
+        split_idx = {
+            "train":torch.tensor(np.arange(0, 1000)),
+            "valid":torch.tensor(np.arange(1000, 2000)),
+            "test":torch.tensor(np.arange(2000, 3000)),
+        }
 
-        # TODO: Remove this
-        print("AAA")
-        self.train_idx = torch.tensor([0, 1, 2, 3, 4, 5])
-        self.valid_idx = torch.tensor([6, 7, 8])
-        self.test_idx = torch.tensor([9, 10])
-        print(len(self.dataset))
+        # the small version
+        if len(self.dataset) < 3000:
+            self.train_idx = torch.tensor([0, 1, 2, 3, 4, 5])
+            self.valid_idx = torch.tensor([6, 7, 8])
+            self.test_idx = torch.tensor([9, 10])
+        else:
+            self.train_idx = split_idx["train"]
+            self.valid_idx = split_idx["valid"]
+            self.test_idx = split_idx["test"]
 
         self.dataset_train = self.dataset.index_select(self.train_idx)
-        self.dataset_val = self.dataset.index_select(self.valid_idx)
         self.dataset_test = self.dataset.index_select(self.test_idx)
+        self.dataset_val = self.dataset.index_select(self.valid_idx)
 
         self.max_node = 256 
         self.multi_hop_max_dist = 5 

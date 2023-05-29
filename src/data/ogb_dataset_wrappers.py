@@ -33,9 +33,42 @@ class MyPygPCQM4Mv2Dataset(PygPCQM4Mv2Dataset):
         item.idx = idx
         return preprocess_2d_graph(item)
 
+# we use this so that we can preprocess the bigger dataset but not destroy the smaller one
+class SmallPygPCQM4Mv2PosDataset(InMemoryDataset):
+    def __init__(self, root='', smiles2graph=smiles2graph, transform=None, pre_transform=None):
+        print("Root is", root)
+        self.original_root = root
+        self.smiles2graph = smiles2graph
+        self.folder = os.path.join(root, 'small-pcqm4m-v2-pos')
+        print("Folder is", self.folder)
+        self.version = 1
+
+        super(SmallPygPCQM4Mv2PosDataset, self).__init__(self.folder, transform, pre_transform)
+
+        processed_data_path = os.path.join(self.folder, "processed/geometric_data_processed.pt")
+        self.data, self.slices = torch.load(processed_data_path)
+
+    @property
+    def raw_file_names(self):
+        return 'data.csv.gz'
+
+    @property
+    def processed_file_names(self):
+        return 'geometric_data_processed.pt'
+
+    def download(self):
+        # already downloaded
+        return
+
+    def process(self):
+        return
+
+    def get_idx_split(self):
+        split_dict = replace_numpy_with_torchtensor(os.path.join(self.folder, "split_dict.pt"))
+        return split_dict
 
 class PygPCQM4Mv2PosDataset(InMemoryDataset):
-    def __init__(self, root='', smiles2graph=smiles2graph, transform=None, pre_transform=None):
+    def __init__(self, root="", smiles2graph=smiles2graph, transform=None, pre_transform=None):
         '''
             Pytorch Geometric PCQM4Mv2 dataset object
                 - root (str): the dataset folder will be located at root/pcqm4m_kddcup2021
@@ -43,9 +76,12 @@ class PygPCQM4Mv2PosDataset(InMemoryDataset):
                     * The default smiles2graph requires rdkit to be installed
         '''
 
-        self.original_root = root
+        self.original_root = "/".join(list(root.split('/')[0:-1])) 
+        # self.original_root = root
         self.smiles2graph = smiles2graph
-        self.folder = os.path.join(root, 'pcqm4m-v2')
+        # self.folder = os.path.join(root, 'pcqm4m-v2')
+        self.folder = root
+        self.folder_name = list(root.split("/"))[-1]
         self.version = 1
 
         # Old url hosted at Stanford
@@ -54,12 +90,6 @@ class PygPCQM4Mv2PosDataset(InMemoryDataset):
         # New url hosted by DGL team at AWS--much faster to download
         self.url = 'https://dgl-data.s3-accelerate.amazonaws.com/dataset/OGB-LSC/pcqm4m-v2.zip'
         self.pos_url = 'http://ogb-data.stanford.edu/data/lsc/pcqm4m-v2-train.sdf.tar.gz'
-
-        # check version and update if necessary
-        if os.path.isdir(self.folder) and (not os.path.exists(os.path.join(self.folder, f'RELEASE_v{self.version}.txt'))):
-            print('PCQM4Mv2 dataset has been updated.')
-            if input('Will you update the dataset now? (y/N)\n').lower() == 'y':
-                shutil.rmtree(self.folder)
 
         super(PygPCQM4Mv2PosDataset, self).__init__(self.folder, transform, pre_transform)
 
@@ -74,25 +104,36 @@ class PygPCQM4Mv2PosDataset(InMemoryDataset):
         return 'geometric_data_processed.pt'
 
     def download(self):
-        if decide_download(self.url):
-            path = download_url(self.url, self.original_root)
-            extract_zip(path, self.original_root)
-            os.unlink(path)
+        # check if we have to download
+        if os.path.isdir(os.path.join(self.original_root, self.folder_name)):
+            pass
         else:
-            print('Stop download.')
-            exit(-1)
+            if decide_download(self.url):
+                path = download_url(self.url, self.original_root)
+                extract_zip(path, self.original_root)
+                os.rename(os.path.join(self.original_root, 'pcqm4m-v2'), os.path.join(self.original_root, self.folder_name))
+                os.unlink(path)
+            else:
+                print('Stop download.')
+                exit(-1)
 
-        if decide_download(self.pos_url):
-            path = download_url(self.pos_url, self.original_root)
-            tar = tarfile.open(path, 'r:gz')
-            filenames = tar.getnames()
-            for file in filenames:
-                tar.extract(file, self.original_root)
-            tar.close()
-            os.unlink(path)
+        # we put it inside the folder
+        if os.path.isdir(os.path.join(self.original_root, "pcqm4m-v2-train.sdf")):
+            # no need to download
+            pass 
         else:
-            print('Stop download')
-            exit(-1)
+            if decide_download(self.pos_url):
+                # put the .sdf inside the folder
+                path = download_url(self.pos_url, self.original_root)
+                tar = tarfile.open(path, 'r:gz')
+                filenames = tar.getnames()
+                for file in filenames:
+                    tar.extract(file, self.original_root)
+                tar.close()
+                os.unlink(path)
+            else:
+                print('Stop download')
+                exit(-1)
 
 
     def process(self):
@@ -103,8 +144,8 @@ class PygPCQM4Mv2PosDataset(InMemoryDataset):
 
         print('Converting SMILES strings into graphs...')
         data_list = []
-        with Pool(processes=1) as pool:
-            iter = pool.imap(smiles2graph, smiles_list[:30])
+        with Pool(processes=40) as pool:
+            iter = pool.imap(smiles2graph, smiles_list)
 
             for i, graph in tqdm(enumerate(iter), total=len(homolumogap_list)):
                 try:
@@ -123,67 +164,37 @@ class PygPCQM4Mv2PosDataset(InMemoryDataset):
                     data.pos = torch.zeros(data.__num_nodes__, 3).to(torch.float32)
 
                     data_list.append(data)
-                    if len(data_list) == 30:
-                        break
                 except:
                     continue
 
         print('Extracting 3D positions from SDF files for Training Data...')
         train_data_with_position_list = []
-        with Pool(processes=1) as pool:
-            # iter = pool.imap(mol2graph, graph_pos_list)
-            graph_list = []
-            for i, mol in enumerate(graph_pos_list):
-                if i == 30:
-                    break 
-                graph_list.append(mol2graph(mol))
-            print("Graph list done", graph_list)
-            print("Doing data list addition")
+        with Pool(processes=40) as pool:
+            iter = pool.imap(mol2graph, graph_pos_list)
 
-            # for i, graph in tqdm(enumerate(iter), total=len(graph_pos_list)):
-            for i, graph in enumerate(graph_list):
-                # try:
-                data = Data()
-                homolumogap = homolumogap_list[i]
+            for i, graph in tqdm(enumerate(iter), total=len(graph_pos_list)):
+                try:
+                    data = Data()
+                    homolumogap = homolumogap_list[i]
 
-                print("Step 1")
+                    assert (len(graph['edge_feat']) == graph['edge_index'].shape[1])
+                    assert (len(graph['node_feat']) == graph['num_nodes'])
 
-                assert (len(graph['edge_feat']) == graph['edge_index'].shape[1])
-                assert (len(graph['node_feat']) == graph['num_nodes'])
+                    data.__num_nodes__ = int(graph['num_nodes'])
+                    data.edge_index = torch.from_numpy(graph['edge_index']).to(torch.int64)
+                    data.edge_attr = torch.from_numpy(graph['edge_feat']).to(torch.int64)
+                    data.x = torch.from_numpy(graph['node_feat']).to(torch.int64)
+                    data.y = torch.Tensor([homolumogap])
+                    data.pos = torch.from_numpy(graph['position']).to(torch.float32)
 
-                print("Step 2")
-
-                data.__num_nodes__ = int(graph['num_nodes'])
-                print("Step 2 1")
-                print("Edge index is ", graph['edge_index'])
-                data.edge_index = torch.from_numpy(graph['edge_index']).to(torch.int64)
-                print("Step 2 2")
-                data.edge_attr = torch.from_numpy(graph['edge_feat']).to(torch.int64)
-                print("Step 2 3")
-                data.x = torch.from_numpy(graph['node_feat']).to(torch.int64)
-                print("Step 2 4")
-                data.y = torch.Tensor([homolumogap])
-                print("Step 2 5")
-                data.pos = torch.from_numpy(graph['position']).to(torch.float32)
-
-                print("Step 3")
-
-                print("Appending graph", data)
-                train_data_with_position_list.append(data)
-
-                if len(train_data_with_position_list) == 30:
-                    break
-                # except:
-                #     continue
-
-        print("Train data with position list:", train_data_with_position_list)
+                    train_data_with_position_list.append(data)
+                except:
+                    continue
 
         data_list = train_data_with_position_list + data_list[len(train_data_with_position_list):]
 
         if self.pre_transform is not None:
             data_list = [self.pre_transform(data) for data in data_list]
-
-        print("Data list length is:", len(data_list))
 
         data, slices = self.collate(data_list)
 
@@ -194,6 +205,18 @@ class PygPCQM4Mv2PosDataset(InMemoryDataset):
         split_dict = replace_numpy_with_torchtensor(torch.load(os.path.join(self.root, 'split_dict.pt')))
         return split_dict
 
+class SmallMyPygPCQM4Mv2PosDataset(SmallPygPCQM4Mv2PosDataset):
+    def download(self):
+        super(SmallMyPygPCQM4Mv2PosDataset, self).download()
+
+    def process(self):
+        super(SmallMyPygPCQM4Mv2PosDataset, self).process()
+
+    @lru_cache(maxsize=16)
+    def __getitem__(self, idx):
+        item = self.get(self.indices()[idx])
+        item.idx = idx
+        return preprocess_3d_graph(item)
 
 class MyPygPCQM4Mv2PosDataset(PygPCQM4Mv2PosDataset):
     def download(self):
