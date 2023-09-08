@@ -6,7 +6,8 @@ from torch.nn import functional as F
 from fairseq.data import FairseqDataset, BaseWrapperDataset, data_utils
 
 from ogb.lsc.pcqm4mv2 import PCQM4Mv2Evaluator
-from src.data.ogb_dataset_wrappers import MyPygPCQM4Mv2Dataset, MyPygPCQM4Mv2PosDataset, SmallMyPygPCQM4Mv2PosDataset
+from src.data.ogb_dataset_wrappers import MyPygPCQM4Mv2Dataset, MyPygPCQM4Mv2PosDataset
+from src.data.iml_test_dataset import IMLDataset
 from src.data.collater import collater_2d, collater_3d
 
 # we call this class from fairseq to load the dataset
@@ -32,21 +33,24 @@ class PreprocessedData():
     def setup(self, stage: str = None):
         # split_idx = self.dataset.get_idx_split()
         # we just use the first 1000 samples for now due to memory issues
-        split_idx = {
-            "train":torch.tensor(np.arange(0, 1000)),
-            "valid":torch.tensor(np.arange(1000, 2000)),
-            "test":torch.tensor(np.arange(2000, 3000)),
-        }
-
-        # the small version
-        if len(self.dataset) < 3000:
-            self.train_idx = torch.tensor([0, 1, 2, 3, 4, 5])
-            self.valid_idx = torch.tensor([6, 7, 8])
-            self.test_idx = torch.tensor([9, 10])
+        if self.dataset_name != "iml-task4":
+            # the small version
+            if len(self.dataset) < 3000:
+                self.train_idx = torch.tensor([0, 1, 2, 3, 4, 5])
+                self.valid_idx = torch.tensor([6, 7, 8])
+                self.test_idx = torch.tensor([9, 10])
+            else:
+                self.train_idx = torch.tensor(np.arange(0, 1000))
+                self.valid_idx = torch.tensor(np.arange(1000, 2000))
+                self.test_idx = torch.tensor(np.arange(2000, 3000))
         else:
+            split_idx = self.dataset.get_idx_split()
             self.train_idx = split_idx["train"]
             self.valid_idx = split_idx["valid"]
-            self.test_idx = split_idx["test"]
+            self.test_idx = split_idx["test-dev"]
+
+        # print("Element 993 attn edge type:", self.dataset[993].attn_edge_type, self.dataset[993].attn_edge_type.shape, self.dataset[993].y)
+        # print("Element 993 homolumogap:", self.dataset[993].y)
 
         self.dataset_train = self.dataset.index_select(self.train_idx)
         self.dataset_test = self.dataset.index_select(self.test_idx)

@@ -3,7 +3,7 @@ import numpy as np
 from rdkit import Chem
 import tarfile
 import rdkit
-from src.features.graph_preprocessing import preprocess_3d_graph, preprocess_2d_graph, mol2graph, smiles2graph
+from src.features.graph_preprocessing import preprocess_item, mol2graph, smiles2graph
 from functools import lru_cache
 from torch_geometric.data import InMemoryDataset
 from torch_geometric.data import Data
@@ -12,12 +12,19 @@ from ogb.utils.url import decide_download, download_url, extract_zip
 import os
 from multiprocessing import Pool
 from tqdm import tqdm
+from rdkit import Chem
 
 def find_smiles_index(smiles_string, list_smiles):
     try:
         return list_smiles.index(smiles_string)
     except ValueError:
         return -1
+
+def get_canonical_smiles(smiles_string):
+    mol = Chem.MolFromSmiles(smiles_string)
+    if mol is None:  # RDKit couldn't parse the SMILES
+        return None
+    return Chem.MolToSmiles(mol, isomericSmiles=True)  # Use isomericSmiles=True to preserve stereochemistry
 
 class IMLDataset(InMemoryDataset):
     def __init__(self, root="", smiles2graph=smiles2graph, transform=None, pre_transform=None):
@@ -59,34 +66,44 @@ class IMLDataset(InMemoryDataset):
         x_test = pd.read_csv(os.path.join(self.raw_dir, "test_features.csv.zip"), index_col="Id", compression='zip')
 
         iml_smiles = list(pd.concat([x_train, x_test], axis=0)["smiles"])
-        iml_homolumogap = np.concatenate([y_train, np.zeros(len(x_test))], dim=0)
+        iml_homolumogap = np.concatenate([y_train, np.zeros(len(x_test))])
+
+        print("SMILES strings", iml_smiles[:5])
+        print("IML Homolumo gap", iml_homolumogap[:5])
 
         iml_train_smiles = iml_smiles[:len(x_train)]
         iml_test_smiles = iml_smiles[len(x_train):]
         assert len(iml_train_smiles) == 100 
-        assert len(iml_test_smiles) == 1000
+        assert len(iml_test_smiles) == 10000
+
+        # iml_smiles = [get_canonical_smiles(smiles) for smiles in iml_smiles]
 
         # OGB Data
-        data_df = pd.read_csv(os.path.join(self.raw_dir, 'data.csv.gz'))
-        ogb_smiles = data_df["smiles"]
-        homolumogap_list = data_df['homolumogap']
-        graph_pos_list = Chem.SDMolSupplier(os.path.join(self.original_root, 'pcqm4m-v2-train.sdf')) 
+        # data_df = pd.read_csv(os.path.join(self.raw_dir, 'data.csv.gz'))
+        # ogb_smiles = list(data_df["smiles"])
+        # ogb_smiles = [get_canonical_smiles(smiles) for smiles in ogb_smiles]
+        # print("IML smiles:", iml_smiles[:5])
+        # print("Ogb smiles:", ogb_smiles[:5])
+        # homolumogap_list = data_df['homolumogap']
+        # graph_pos_list = Chem.SDMolSupplier(os.path.join(self.original_root, 'pcqm4m-v2-train.sdf')) 
 
         data_list = []
-        train_data_with_position_list = []
 
-        for i in range(len(iml_data)):
-            j = find_smiles_index(iml_data[i], ogb_smiles) 
+        found = 0
 
-            if j == -1:
-                continue
+        for i in range(len(iml_smiles)):
+            # print("i = ", i)
+            # j = find_smiles_index(iml_smiles[i], ogb_smiles) 
 
-            if i <= 99:
-                assert iml_smiles[i] == ogb_smiles[j]
-                assert iml_homolumogap[i] == homolumogap_list[j]
+            # if j != -1:
+            #     found += 1
+        
+            # if i <= 99:
+            #     assert iml_smiles[i] == ogb_smiles[j]
+            #     assert iml_homolumogap[i] == homolumogap_list[j]
 
-            graph = smiles2graph(iml_data[i])
-            homolumogap = homolumogap_list[j]
+            graph = smiles2graph(iml_smiles[i])
+            homolumogap = iml_homolumogap[i]
 
             data = Data()
             assert (len(graph['edge_feat']) == graph['edge_index'].shape[1])
@@ -96,25 +113,27 @@ class IMLDataset(InMemoryDataset):
             data.edge_attr = torch.from_numpy(graph['edge_feat']).to(torch.int64)
             data.x = torch.from_numpy(graph['node_feat']).to(torch.int64)
             data.y = torch.Tensor([homolumogap])
-            data.pos = torch.zeros(data.__num_nodes__, 3).to(torch.float32)
+            # data.pos = torch.zeros(data.__num_nodes__, 3).to(torch.float32)
 
             data_list.append(data)
 
-            graph = mol2graph(graph_pos_list[j])
+            # graph = mol2graph(graph_pos_list[j])
 
-            data = Data()
-            assert (len(graph['edge_feat']) == graph['edge_index'].shape[1])
-            assert (len(graph['node_feat']) == graph['num_nodes'])
-            data.__num_nodes__ = int(graph['num_nodes'])
-            data.edge_index = torch.from_numpy(graph['edge_index']).to(torch.int64)
-            data.edge_attr = torch.from_numpy(graph['edge_feat']).to(torch.int64)
-            data.x = torch.from_numpy(graph['node_feat']).to(torch.int64)
-            data.y = torch.Tensor([homolumogap])
-            data.pos = torch.from_numpy(graph['position']).to(torch.float32)
+            # data = Data()
+            # assert (len(graph['edge_feat']) == graph['edge_index'].shape[1])
+            # assert (len(graph['node_feat']) == graph['num_nodes'])
+            # data.__num_nodes__ = int(graph['num_nodes'])
+            # data.edge_index = torch.from_numpy(graph['edge_index']).to(torch.int64)
+            # data.edge_attr = torch.from_numpy(graph['edge_feat']).to(torch.int64)
+            # data.x = torch.from_numpy(graph['node_feat']).to(torch.int64)
+            # data.y = torch.Tensor([homolumogap])
+            # data.pos = torch.from_numpy(graph['position']).to(torch.float32)
 
-            train_data_with_position_list.append(data)
+            # train_data_with_position_list.append(data)
 
-        data_list = train_data_with_position_list + data_list[len(train_data_with_position_list):]
+        # print("Found:", found)
+
+        # data_list = train_data_with_position_list + data_list[len(train_data_with_position_list):]
 
         if self.pre_transform is not None:
             data_list = [self.pre_transform(data) for data in data_list]
@@ -126,9 +145,9 @@ class IMLDataset(InMemoryDataset):
 
     def get_idx_split(self):
         split_dict = {
-            "train": torch.tensor(list(range(50))),
-            "valid": torch.tensor(list(range(50, 100))),
-            "test": torch.tensor(list(range(100, 1100))),
+            "train": torch.tensor(list(range(100))),
+            "valid": torch.tensor(list(range(100))),
+            "test-dev": torch.tensor(list(range(100, 1100))),
         }
         return split_dict
 
@@ -136,7 +155,7 @@ class IMLDataset(InMemoryDataset):
     def __getitem__(self, idx):
         item = self.get(self.indices()[idx])
         item.idx = idx
-        return preprocess_3d_graph(item)
+        return preprocess_item(item)
 
 if __name__ == "__main__":
     dataset = IMLDataset(root="/Users/oscarbalcells/Desktop/AI/task4/datasets/iml_task4/")
