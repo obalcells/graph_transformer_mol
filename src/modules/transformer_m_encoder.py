@@ -254,6 +254,7 @@ class TransformerMEncoder(nn.Module):
 
         delta_pos = None
         if self.molecule_3d_bias is not None and not (batched_data["pos"] == 0).all():
+            assert False
             attn_bias_3d, merged_edge_features, delta_pos = self.molecule_3d_bias(batched_data)
             if mask_3d is not None:
                 merged_edge_features, delta_pos = merged_edge_features * mask_3d[:, None, None], delta_pos * mask_3d[:, None, None, None]

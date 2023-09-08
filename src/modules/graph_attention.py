@@ -56,10 +56,3 @@ class MultiHeadedAttention(nn.Module):
         del value
 
         return self.linears[-1](x)
-
-class GraphAttentionBias(nn.Module):
-    def __init__(self):
-        super(GraphAttentionBias, self).__init__()
-
-    def forward(self, batch_data):
-        return torch.zeros_like(batch_data)

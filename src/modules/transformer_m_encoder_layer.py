@@ -122,11 +122,6 @@ class TransformerMEncoderLayer(nn.Module):
         self_attn_mask: Optional[torch.Tensor] = None,
         self_attn_padding_mask: Optional[torch.Tensor] = None,
     ):
-        """
-        LayerNorm is applied either before or after the self-attention/ffn
-        modules similar to the original Transformer implementation.
-        """
-        # x: T x B x C
         residual = x
         if self.sandwich_ln:
             x = self.self_attn_layer_norm(x)
